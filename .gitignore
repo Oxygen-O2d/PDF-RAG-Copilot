@@ -1,0 +1,19 @@
+# Python & FastAPI backend
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+backend/chroma_db/
+backend/chroma_data/
+*.db
+*.sqlite3
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Extension builds / scratch
+scratch/
+*.log

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF RAG Copilot — AI Side Panel</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="top-bar">
+      <div class="logo-group">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <path d="M10 12h4"></path>
+            <path d="M10 16h4"></path>
+          </svg>
+        </div>
+        <div>
+          <h1>PDF RAG Copilot</h1>
+          <span class="subtitle">Manifest V3 · Chroma DB · LangChain</span>
+        </div>
+      </div>
+      <div class="status-badge" id="apiStatusBadge" title="Backend Server Status">
+        <span class="status-dot"></span>
+        <span id="apiStatusText">Checking API...</span>
+      </div>
+    </header>
+
+    <!-- Backend Offline Alert Banner -->
+    <div class="alert alert-danger hidden" id="backendOfflineAlert">
+      <strong>Backend Disconnected</strong>
+      <p>Cannot connect to RAG server. Please run <code>uvicorn main:app --reload</code> within your virtual environment on <code>localhost:8000</code>.</p>
+    </div>
+
+    <!-- Active Tab & Document Banner -->
+    <section class="doc-status-card" id="docStatusCard">
+      <div class="doc-header">
+        <span class="badge badge-neutral" id="pdfBadge">SCANNING TAB</span>
+        <span class="doc-url" id="docTitle">Detecting active document...</span>
+      </div>
+      
+      <!-- File URL Permission Warning -->
+      <div class="alert alert-warning hidden" id="filePermissionAlert">
+        <div>⚠️</div>
+        <div>
+          <strong>Local File Access Required</strong>
+          <p>To extract local <code>file:///</code> PDFs, open <a href="#" id="openExtensionSettings">Extension Settings</a> and enable <b>"Allow access to file URLs"</b>.</p>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="doc-actions">
+        <button id="extractIngestBtn" class="btn btn-primary" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          Extract &amp; Index PDF
+        </button>
+        <button id="refreshTabBtn" class="btn btn-ghost" title="Refresh active tab check">↻</button>
+      </div>
+
+      <!-- Extraction / Ingestion Progress Bar -->
+      <div class="progress-wrapper hidden" id="progressWrapper">
+        <div class="progress-bar-container">
+          <div class="progress-bar-fill" id="progressBarFill"></div>
+        </div>
+        <span class="progress-text" id="progressText">Ingesting PDF into local vector database...</span>
+      </div>
+    </section>
+
+    <!-- Chat Messages Surface -->
+    <main class="chat-container" id="chatMessages">
+      <div class="welcome-banner">
+        <div class="welcome-icon">⚡</div>
+        <h3>Ready to query your PDF</h3>
+        <p>Click <strong>Extract &amp; Index PDF</strong> above on any PDF tab, local file, or Google Drive preview to ingest its contents into Chroma DB.</p>
+      </div>
+    </main>
+
+    <!-- Typing Indicator -->
+    <div class="typing-indicator hidden" id="typingIndicator">
+      <div class="dot"></div>
+      <div class="dot"></div>
+      <div class="dot"></div>
+      <span>RAG Copilot is reasoning...</span>
+    </div>
+
+    <!-- Chat Input Area -->
+    <footer class="chat-input-bar">
+      <form id="chatForm">
+        <div class="input-wrapper">
+          <textarea
+            id="chatInput"
+            rows="1"
+            placeholder="Ask anything about the document..."
+            disabled
+          ></textarea>
+          <button type="submit" id="sendBtn" class="btn-send" disabled aria-label="Send Message">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </div>
+      </form>
+    </footer>
+  </div>
+  <script src="sidepanel.js" type="module"></script>
+</body>
+</html>
