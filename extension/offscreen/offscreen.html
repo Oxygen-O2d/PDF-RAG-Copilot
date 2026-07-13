@@ -6,10 +6,11 @@
 </head>
 <body>
   <!--
-    Manifest V3 Offscreen Document
-    Relative path to extension root library: ../lib/pdf.min.js
+    Manifest V3 Offscreen Document (v2.0 — Backend-Free)
+    Runs all heavy lifting: PDF.js text extraction, Tesseract.js OCR fallback,
+    Transformers.js embedding generation, and in-browser vector DB operations.
   -->
   <script src="../lib/pdf.min.js"></script>
-  <script src="offscreen.js"></script>
+  <script src="offscreen.js" type="module"></script>
 </body>
 </html>

@@ -1,88 +1,234 @@
 /**
- * sidepanel.js — Complete Phase 4 Production Controller (Updated with Robust PDF Detection)
- * Orchestrates:
- * 1. Client-Side PDF.js Text Extraction via background Service Worker & Offscreen Document.
- * 2. POST /ingest to local Python FastAPI + ChromaDB server (http://127.0.0.1:8000).
- * 3. Conversational RAG queries via POST /chat with interactive source citations & accordions.
- * 4. Robust Offline / File-Scheme Permission error handling.
+ * sidepanel.js — PDF RAG Copilot v2.1 (Backend-Free · 4 LLM Providers)
+ *
+ * Supported providers: Google Gemini, OpenAI, Anthropic, Groq
  */
 
-const BACKEND_URL = "http://127.0.0.1:8000";
+// ─── Provider config ─────────────────────────────────────────────────────────
 
-// DOM Elements
-const apiStatusBadge = document.getElementById("apiStatusBadge");
-const apiStatusText = document.getElementById("apiStatusText");
-const backendOfflineAlert = document.getElementById("backendOfflineAlert");
-const pdfBadge = document.getElementById("pdfBadge");
-const docTitle = document.getElementById("docTitle");
-const extractIngestBtn = document.getElementById("extractIngestBtn");
-const refreshTabBtn = document.getElementById("refreshTabBtn");
-const filePermissionAlert = document.getElementById("filePermissionAlert");
+const PROVIDERS = {
+  gemini: {
+    label: "Google",
+    keyLabel: "Google API Key",
+    keyHint: "Get free key →",
+    keyLink: "https://aistudio.google.com/app/apikey",
+    keyLinkText: "aistudio.google.com",
+    placeholder: "AIza...",
+    models: [
+      { value: "gemini-2.0-flash",   label: "gemini-2.0-flash ✨ Latest" },
+      { value: "gemini-1.5-flash",   label: "gemini-1.5-flash ⚡ Fast" },
+      { value: "gemini-1.5-pro",     label: "gemini-1.5-pro 🧠 Smart" },
+    ],
+    default: "gemini-2.0-flash"
+  },
+  openai: {
+    label: "OpenAI",
+    keyLabel: "OpenAI API Key",
+    keyHint: "Get key →",
+    keyLink: "https://platform.openai.com/api-keys",
+    keyLinkText: "platform.openai.com",
+    placeholder: "sk-...",
+    models: [
+      { value: "gpt-4o-mini",     label: "gpt-4o-mini ⚡ Fast & Cheap" },
+      { value: "gpt-4o",          label: "gpt-4o 🧠 Most Capable" },
+      { value: "gpt-3.5-turbo",   label: "gpt-3.5-turbo 💰 Budget" },
+    ],
+    default: "gpt-4o-mini"
+  },
+  anthropic: {
+    label: "Anthropic",
+    keyLabel: "Anthropic API Key",
+    keyHint: "Get key →",
+    keyLink: "https://console.anthropic.com/settings/keys",
+    keyLinkText: "console.anthropic.com",
+    placeholder: "sk-ant-...",
+    models: [
+      { value: "claude-3-5-haiku-20241022",  label: "claude-3.5-haiku ⚡ Fast" },
+      { value: "claude-3-5-sonnet-20241022", label: "claude-3.5-sonnet 🧠 Smart" },
+      { value: "claude-3-opus-20240229",     label: "claude-3-opus 💎 Best" },
+    ],
+    default: "claude-3-5-haiku-20241022"
+  },
+  groq: {
+    label: "Groq",
+    keyLabel: "Groq API Key",
+    keyHint: "Get free key →",
+    keyLink: "https://console.groq.com/keys",
+    keyLinkText: "console.groq.com",
+    placeholder: "gsk_...",
+    models: [
+      // Best for RAG: strong reasoning + Groq's ultra-fast LPU inference
+      { value: "llama-3.3-70b-versatile",     label: "llama-3.3-70b-versatile 🏆 Best for RAG" },
+      { value: "llama-3.1-8b-instant",        label: "llama-3.1-8b-instant ⚡ Fastest" },
+      { value: "llama3-70b-8192",             label: "llama3-70b-8192 🧠 Capable" },
+      { value: "mixtral-8x7b-32768",          label: "mixtral-8x7b-32768 📚 Long Context" },
+      { value: "gemma2-9b-it",               label: "gemma2-9b-it 🌿 Google" },
+    ],
+    default: "llama-3.3-70b-versatile"
+  }
+};
+
+// ─── DOM references ───────────────────────────────────────────────────────────
+
+const apiStatusBadge       = document.getElementById("apiStatusBadge");
+const apiStatusText        = document.getElementById("apiStatusText");
+const pdfBadge             = document.getElementById("pdfBadge");
+const docTitle             = document.getElementById("docTitle");
+const extractIngestBtn     = document.getElementById("extractIngestBtn");
+const refreshTabBtn        = document.getElementById("refreshTabBtn");
+const filePermissionAlert  = document.getElementById("filePermissionAlert");
 const openExtensionSettings = document.getElementById("openExtensionSettings");
-const progressWrapper = document.getElementById("progressWrapper");
-const progressBarFill = document.getElementById("progressBarFill");
-const progressText = document.getElementById("progressText");
-const chatMessages = document.getElementById("chatMessages");
-const typingIndicator = document.getElementById("typingIndicator");
-const chatForm = document.getElementById("chatForm");
-const chatInput = document.getElementById("chatInput");
-const sendBtn = document.getElementById("sendBtn");
+const progressWrapper      = document.getElementById("progressWrapper");
+const progressBarFill      = document.getElementById("progressBarFill");
+const progressText         = document.getElementById("progressText");
+const chatMessages         = document.getElementById("chatMessages");
+const typingIndicator      = document.getElementById("typingIndicator");
+const chatForm             = document.getElementById("chatForm");
+const chatInput            = document.getElementById("chatInput");
+const sendBtn              = document.getElementById("sendBtn");
+
+// Settings
+const settingsToggleBtn    = document.getElementById("settingsToggleBtn");
+const settingsPanel        = document.getElementById("settingsPanel");
+const providerPills        = document.getElementById("providerPills");
+const providerSelect       = document.getElementById("providerSelect"); // hidden input
+const apiKeyInput          = document.getElementById("apiKeyInput");
+const apiKeyLabel          = document.getElementById("apiKeyLabel");
+const apiKeyHint           = document.getElementById("apiKeyHint");
+const apiKeyLink           = document.getElementById("apiKeyLink");
+const modelSelect          = document.getElementById("modelSelect");
+const saveSettingsBtn      = document.getElementById("saveSettingsBtn");
+const toggleKeyVisibility  = document.getElementById("toggleKeyVisibility");
+
+// ─── State ────────────────────────────────────────────────────────────────────
 
 let currentTabInfo = null;
-let currentDocId = null;
-let isBackendOnline = false;
+let currentDocId   = null;
 
-// Initialize Side Panel
+// Per-provider settings (each has its own key + model stored separately)
+let settings = {
+  activeProvider: "gemini",
+  gemini:    { apiKey: "", model: "gemini-2.0-flash" },
+  openai:    { apiKey: "", model: "gpt-4o-mini" },
+  anthropic: { apiKey: "", model: "claude-3-5-haiku-20241022" },
+  groq:      { apiKey: "", model: "llama-3.3-70b-versatile" }
+};
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+
 document.addEventListener("DOMContentLoaded", async () => {
-  await checkBackendStatus();
+  await loadSettings();
   await refreshActiveTabInfo();
   setupEventListeners();
+  updateApiStatusBadge();
 });
 
-/**
- * 1. Robust PDF Detection Fix (client helper)
- */
-function isPDF(tab) {
-  if (!tab || !tab.url) return false;
-  const urlRegex = /\.pdf($|\?|#)/i;
-  const isPdfUrl = urlRegex.test(tab.url) || tab.url.startsWith("chrome-extension://");
-  const isPdfTitle = tab.title && tab.title.toLowerCase().includes(".pdf");
-  const isDrivePage = tab.url.includes("drive.google.com");
+// ─── Settings persistence ─────────────────────────────────────────────────────
 
-  return Boolean(isPdfUrl || isPdfTitle || isDrivePage || tab.isPdf);
+async function loadSettings() {
+  const stored = await chrome.storage.sync.get(["activeProvider", "gemini", "openai", "anthropic", "groq"]);
+  if (stored.activeProvider) settings.activeProvider = stored.activeProvider;
+  ["gemini", "openai", "anthropic", "groq"].forEach((p) => {
+    if (stored[p]) settings[p] = { ...settings[p], ...stored[p] };
+  });
+  applyProviderToUI(settings.activeProvider);
 }
 
-/**
- * Health Check against http://127.0.0.1:8000/health
- */
-async function checkBackendStatus() {
-  try {
-    const response = await fetch(`${BACKEND_URL}/health`, { method: "GET" });
-    if (response.ok) {
-      isBackendOnline = true;
-      setApiStatus(true, "RAG Online");
-      backendOfflineAlert.classList.add("hidden");
-    } else {
-      throw new Error(`Server returned status ${response.status}`);
-    }
-  } catch (error) {
-    isBackendOnline = false;
-    setApiStatus(false, "Backend Offline");
-    backendOfflineAlert.classList.remove("hidden");
+async function saveSettings() {
+  const provider = settings.activeProvider;
+
+  // Save the current key + model into the active provider's slot
+  settings[provider].apiKey = apiKeyInput.value.trim();
+  settings[provider].model  = modelSelect.value;
+
+  await chrome.storage.sync.set({
+    activeProvider: settings.activeProvider,
+    gemini:    settings.gemini,
+    openai:    settings.openai,
+    anthropic: settings.anthropic,
+    groq:      settings.groq
+  });
+
+  updateApiStatusBadge();
+  settingsPanel.classList.add("hidden");
+  showSaveToast();
+}
+
+function showSaveToast() {
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.textContent = "✓ Settings saved";
+  document.body.appendChild(toast);
+  setTimeout(() => toast.classList.add("toast-show"), 10);
+  setTimeout(() => {
+    toast.classList.remove("toast-show");
+    setTimeout(() => toast.remove(), 300);
+  }, 2000);
+}
+
+// ─── Provider UI logic ────────────────────────────────────────────────────────
+
+function applyProviderToUI(providerKey) {
+  const cfg = PROVIDERS[providerKey];
+  if (!cfg) return;
+
+  settings.activeProvider = providerKey;
+  providerSelect.value = providerKey;
+
+  // Update pill active state
+  providerPills.querySelectorAll(".provider-pill").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.provider === providerKey);
+  });
+
+  // Update label, hint, placeholder
+  apiKeyLabel.textContent  = cfg.keyLabel;
+  apiKeyInput.placeholder  = cfg.placeholder;
+  apiKeyLink.href          = cfg.keyLink;
+  apiKeyLink.textContent   = cfg.keyLinkText;
+  apiKeyHint.childNodes[0].textContent = cfg.keyHint + " ";
+
+  // Fill API key from saved settings
+  apiKeyInput.value        = settings[providerKey].apiKey || "";
+  apiKeyInput.type         = "password";
+
+  // Rebuild model options
+  modelSelect.innerHTML = cfg.models
+    .map((m) => `<option value="${m.value}">${m.label}</option>`)
+    .join("");
+  modelSelect.value = settings[providerKey].model || cfg.default;
+}
+
+function updateApiStatusBadge() {
+  const provider = settings.activeProvider;
+  const apiKey   = settings[provider]?.apiKey;
+
+  if (apiKey) {
+    const label = PROVIDERS[provider]?.label || provider;
+    apiStatusBadge.className = "status-badge online";
+    apiStatusText.textContent = `${label} Ready`;
+  } else {
+    apiStatusBadge.className = "status-badge offline";
+    apiStatusText.textContent = "No API Key";
   }
 }
 
-function setApiStatus(online, text) {
-  apiStatusBadge.className = `status-badge ${online ? "online" : "offline"}`;
-  apiStatusText.textContent = text;
+// ─── Tab Detection ────────────────────────────────────────────────────────────
+
+function isPDF(tab) {
+  if (!tab || !tab.url) return false;
+  const urlRegex = /\.pdf($|\?|#)/i;
+  return Boolean(
+    urlRegex.test(tab.url) ||
+    tab.url.startsWith("chrome-extension://") ||
+    (tab.title && tab.title.toLowerCase().includes(".pdf")) ||
+    tab.url.includes("drive.google.com") ||
+    tab.isPdf
+  );
 }
 
-/**
- * Query current active tab info from Service Worker
- */
 async function refreshActiveTabInfo() {
   chrome.runtime.sendMessage({ type: "GET_ACTIVE_TAB_INFO" }, (response) => {
-    if (chrome.runtime.lastError || !response || !response.success) {
+    if (chrome.runtime.lastError || !response?.success) {
       updateDocumentUI({ title: "No active document", isPdf: false });
       return;
     }
@@ -90,66 +236,93 @@ async function refreshActiveTabInfo() {
   });
 }
 
-/**
- * Listen for broadcasts from background service worker when tab switches
- */
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "TAB_UPDATED" && message.payload) {
     updateDocumentUI(message.payload);
   }
+  if (message.type === "INDEXING_PROGRESS") {
+    const { current, total } = message.payload;
+    const pct = Math.round((current / total) * 40) + 55;
+    progressBarFill.style.width = `${pct}%`;
+    progressText.textContent = `Embedding chunk ${current} / ${total}...`;
+  }
 });
 
-/**
- * Update UI cards based on active document type
- */
 function updateDocumentUI(tabInfo) {
   currentTabInfo = tabInfo;
   docTitle.textContent = tabInfo.title || tabInfo.url || "Unknown Document";
 
-  // Check file:// permissions warning
   if (tabInfo.isFileUrl && !tabInfo.allowedFileAccess) {
     filePermissionAlert.classList.remove("hidden");
   } else {
     filePermissionAlert.classList.add("hidden");
   }
 
-  const pdfDetected = isPDF(tabInfo);
-
-  if (pdfDetected) {
+  if (isPDF(tabInfo)) {
     pdfBadge.className = "badge badge-pdf";
-    pdfBadge.textContent = "PDF / DRIVE DETECTED";
-    extractIngestBtn.disabled = false;
+    pdfBadge.textContent = "PDF DETECTED";
   } else {
     pdfBadge.className = "badge badge-neutral";
     pdfBadge.textContent = "READY TO SCAN";
-    extractIngestBtn.disabled = false;
   }
+  extractIngestBtn.disabled = false;
 }
 
-function setupEventListeners() {
-  refreshTabBtn.addEventListener("click", async () => {
-    await checkBackendStatus();
-    await refreshActiveTabInfo();
-  });
+// ─── Event Listeners ──────────────────────────────────────────────────────────
 
-  openExtensionSettings?.addEventListener("click", (e) => {
+function setupEventListeners() {
+  refreshTabBtn.addEventListener("click", refreshActiveTabInfo);
+
+  openExtensionSettings.addEventListener("click", (e) => {
     e.preventDefault();
     chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
   });
 
-  // Extract & Index Button Handler
-  extractIngestBtn.addEventListener("click", async () => {
-    if (!currentTabInfo) return;
-    await handleExtractAndIngest(currentTabInfo);
+  settingsToggleBtn.addEventListener("click", () => {
+    settingsPanel.classList.toggle("hidden");
+    // When opening, make sure UI reflects current provider
+    if (!settingsPanel.classList.contains("hidden")) {
+      applyProviderToUI(settings.activeProvider);
+    }
   });
 
-  // Chat Form Submission
+  // Provider pill buttons
+  providerPills.addEventListener("click", (e) => {
+    const pill = e.target.closest(".provider-pill");
+    if (!pill) return;
+
+    // Save current provider's key/model before switching
+    const prev = settings.activeProvider;
+    settings[prev].apiKey = apiKeyInput.value.trim();
+    settings[prev].model  = modelSelect.value;
+
+    applyProviderToUI(pill.dataset.provider);
+  });
+
+  toggleKeyVisibility.addEventListener("click", () => {
+    apiKeyInput.type = apiKeyInput.type === "password" ? "text" : "password";
+  });
+
+  saveSettingsBtn.addEventListener("click", saveSettings);
+
+  extractIngestBtn.addEventListener("click", async () => {
+    if (!currentTabInfo) return;
+    const provider = settings.activeProvider;
+    if (!settings[provider]?.apiKey) {
+      settingsPanel.classList.remove("hidden");
+      appendAssistantMessage(
+        `⚙️ **API Key Required**\n\nSelect a provider and paste your API key in the settings panel above, then click **Save & Apply**.`
+      );
+      return;
+    }
+    await handleExtractAndIndex(currentTabInfo);
+  });
+
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     await handleChatSubmit();
   });
 
-  // Handle Enter (without Shift) inside Textarea
   chatInput.addEventListener("keydown", async (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -165,9 +338,8 @@ function autoResizeInput() {
   chatInput.style.height = `${Math.min(chatInput.scrollHeight, 100)}px`;
 }
 
-/**
- * Generate clean, deterministic document identifier from URL/Filename
- */
+// ─── Extract & Index Pipeline ─────────────────────────────────────────────────
+
 function generateDocId(url) {
   if (!url) return "doc_default";
   const cleaned = url.split("?")[0].split("#")[0];
@@ -175,46 +347,39 @@ function generateDocId(url) {
   return filename.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
 }
 
-/**
- * INGESTION WORKFLOW
- */
-async function handleExtractAndIngest(tabInfo) {
+async function handleExtractAndIndex(tabInfo) {
   extractIngestBtn.disabled = true;
   progressWrapper.classList.remove("hidden");
-  progressBarFill.style.width = "25%";
-  progressText.textContent = "Extracting text from PDF tab via Offscreen Document...";
+  progressBarFill.style.width = "10%";
+  progressText.textContent = "Extracting text from PDF...";
 
   try {
-    const extractionResult = await extractPdfTextFromTab(tabInfo);
+    const extractResult = await bgMessage("EXTRACT_PDF_TEXT", {
+      tabId: tabInfo.tabId,
+      url: tabInfo.url
+    });
 
-    if (!extractionResult.success) {
-      throw new Error(extractionResult.error || "Failed to extract text from PDF");
-    }
+    if (!extractResult.success) throw new Error(extractResult.error);
 
-    progressBarFill.style.width = "65%";
-    progressText.textContent = "Ingesting PDF into local vector database...";
+    const ocrNote = extractResult.ocrPageCount > 0
+      ? ` (${extractResult.ocrPageCount} page(s) via OCR)`
+      : "";
+
+    progressBarFill.style.width = "40%";
+    progressText.textContent = `Extracted ${extractResult.pageCount} pages${ocrNote}. Generating embeddings...`;
 
     currentDocId = generateDocId(tabInfo.url);
 
-    const ingestResponse = await fetch(`${BACKEND_URL}/ingest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        raw_text: extractionResult.fullText,
-        pages: extractionResult.pages,
-        doc_id: currentDocId,
-        title: tabInfo.title || "Untitled PDF"
-      })
+    const indexResult = await bgMessage("INDEX_CHUNKS", {
+      pages: extractResult.pages,
+      doc_id: currentDocId,
+      title: tabInfo.title || "Untitled PDF"
     });
 
-    if (!ingestResponse.ok) {
-      throw new Error(`Server returned HTTP ${ingestResponse.status}`);
-    }
-
-    const ingestData = await ingestResponse.json();
+    if (!indexResult.success) throw new Error(indexResult.error);
 
     progressBarFill.style.width = "100%";
-    progressText.textContent = `Success! Vectorized ${ingestData.chunk_count} chunks into Chroma DB.`;
+    progressText.textContent = `✓ Indexed ${indexResult.chunk_count} chunks locally.`;
 
     pdfBadge.className = "badge badge-ready";
     pdfBadge.textContent = "READY TO CHAT";
@@ -224,166 +389,266 @@ async function handleExtractAndIngest(tabInfo) {
     sendBtn.disabled = false;
     chatInput.focus();
 
+    const provider = PROVIDERS[settings.activeProvider]?.label || settings.activeProvider;
     appendAssistantMessage(
-      `🎉 **Ready to Chat!** Successfully indexed **${tabInfo.title}** (${extractionResult.pageCount} pages, ${ingestData.chunk_count} chunks stored in local Chroma DB).\n\nAsk any question below!`
+      `🎉 **Ready to Chat!**\n\n` +
+      `Indexed **${tabInfo.title}** successfully:\n` +
+      `- 📄 ${extractResult.pageCount} pages extracted${ocrNote}\n` +
+      `- 🧩 ${indexResult.chunk_count} chunks embedded locally (Transformers.js)\n` +
+      `- 💾 Stored in browser IndexedDB\n` +
+      `- 🤖 Answers powered by **${provider} · ${settings[settings.activeProvider].model}**\n\n` +
+      `Ask anything below!`
     );
+
   } catch (error) {
-    console.error("[Ingest Error]", error);
+    console.error("[SidePanel] Indexing failed:", error);
     progressBarFill.style.width = "100%";
     progressBarFill.style.background = "var(--danger-color)";
-    progressText.textContent = "Ingestion failed.";
-
-    if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
-      backendOfflineAlert.classList.remove("hidden");
-      appendAssistantMessage(
-        `⚠️ **Cannot connect to RAG server.**\n\nPlease run \`uvicorn main:app --reload\` within your virtual environment on \`${BACKEND_URL}\`.`
-      );
-    } else {
-      appendAssistantMessage(`⚠️ **Ingestion Error:** ${error.message}`);
-    }
+    progressText.textContent = "Failed.";
+    appendAssistantMessage(`⚠️ **Indexing Error:** ${error.message}`);
   } finally {
     setTimeout(() => {
       progressWrapper.classList.add("hidden");
       progressBarFill.style.background = "";
       extractIngestBtn.disabled = false;
-    }, 4500);
+    }, 4000);
   }
 }
 
-/**
- * Relay PDF text extraction request to background worker
- */
-function extractPdfTextFromTab(tabInfo) {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(
-      { type: "EXTRACT_PDF_TEXT", payload: { tabId: tabInfo.tabId, url: tabInfo.url } },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          resolve({ success: false, error: chrome.runtime.lastError.message });
-        } else {
-          resolve(response || { success: false, error: "No response received from extraction script" });
-        }
-      }
-    );
-  });
-}
+// ─── Chat Pipeline ────────────────────────────────────────────────────────────
 
-/**
- * CHAT TRIGGER
- */
 async function handleChatSubmit() {
   const query = chatInput.value.trim();
-  if (!query) return;
+  if (!query || !currentDocId) return;
 
   appendUserMessage(query);
   chatInput.value = "";
   autoResizeInput();
-
   typingIndicator.classList.remove("hidden");
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
   try {
-    const response = await fetch(`${BACKEND_URL}/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: query,
-        doc_id: currentDocId || generateDocId(currentTabInfo?.url),
-        top_k: 4
-      })
+    const provider = settings.activeProvider;
+    const apiKey   = settings[provider]?.apiKey;
+    if (!apiKey) throw new Error("No API key configured. Click ⚙️ to add your API key.");
+
+    // Retrieve relevant chunks via cosine search
+    const searchResult = await bgMessage("SEARCH_CHUNKS", {
+      query,
+      doc_id: currentDocId,
+      top_k: 4
     });
 
-    if (!response.ok) {
-      throw new Error(`Server returned HTTP ${response.status}`);
-    }
+    if (!searchResult.success) throw new Error(searchResult.error);
 
-    const data = await response.json();
-    appendAssistantMessage(data.answer || "No answer returned.", data.sources || []);
+    // Call the active provider's LLM with the retrieved context
+    const answer = await callLLM(query, searchResult.context);
+    appendAssistantMessage(answer, searchResult.sources);
+
   } catch (error) {
-    if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
-      backendOfflineAlert.classList.remove("hidden");
-      appendAssistantMessage(
-        `⚠️ **Cannot connect to RAG server.**\n\nPlease run \`uvicorn main:app --reload\` within your virtual environment.`
-      );
-    } else {
-      appendAssistantMessage(`⚠️ **Query Error:** ${error.message}`);
-    }
+    console.error("[SidePanel] Chat failed:", error);
+    appendAssistantMessage(`⚠️ **Query Error:** ${error.message}`);
   } finally {
     typingIndicator.classList.add("hidden");
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 }
 
+// ─── Background message helper ────────────────────────────────────────────────
+
+function bgMessage(type, payload) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type, payload }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({ success: false, error: chrome.runtime.lastError.message });
+      } else {
+        resolve(response || { success: false, error: "No response" });
+      }
+    });
+  });
+}
+
+// ─── LLM Router ──────────────────────────────────────────────────────────────
+
+async function callLLM(query, context) {
+  const provider = settings.activeProvider;
+  const apiKey   = settings[provider].apiKey;
+  const model    = settings[provider].model;
+  const prompt   = buildRagPrompt(query, context);
+
+  switch (provider) {
+    case "openai":    return callOpenAI(prompt, apiKey, model);
+    case "anthropic": return callAnthropic(prompt, apiKey, model);
+    case "groq":      return callGroq(prompt, apiKey, model);
+    case "gemini":
+    default:          return callGemini(prompt, apiKey, model);
+  }
+}
+
+function buildRagPrompt(query, context) {
+  return `You are an expert PDF AI Assistant. Answer the user's question using ONLY the provided document context below.
+
+### Retrieved Document Context:
+${context}
+
+### User Question:
+${query}
+
+### Instructions:
+- Answer directly and confidently.
+- Do NOT say "Based on the provided text" or "According to the context". Just answer.
+- Use clean Markdown formatting: headers (###), bold (**), bullet points, code blocks.
+- If the answer is not in the context, clearly state what information is missing.`;
+}
+
+// ── Google Gemini ─────────────────────────────────────────────────────────────
+async function callGemini(prompt, apiKey, model) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Gemini error (${res.status}): ${err.error?.message || res.statusText}`);
+  }
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response from Gemini.";
+}
+
+// ── OpenAI ────────────────────────────────────────────────────────────────────
+async function callOpenAI(prompt, apiKey, model) {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2,
+      max_tokens: 1024
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`OpenAI error (${res.status}): ${err.error?.message || res.statusText}`);
+  }
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "No response from OpenAI.";
+}
+
+// ── Anthropic Claude ──────────────────────────────────────────────────────────
+async function callAnthropic(prompt, apiKey, model) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      // Required for Claude calls from browser context
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: prompt }]
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Anthropic error (${res.status}): ${err.error?.message || res.statusText}`);
+  }
+  const data = await res.json();
+  return data.content?.[0]?.text || "No response from Anthropic.";
+}
+
+// ── Groq ──────────────────────────────────────────────────────────────────────
+async function callGroq(prompt, apiKey, model) {
+  // Groq uses an OpenAI-compatible API endpoint
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2,
+      max_tokens: 1024
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Groq error (${res.status}): ${err.error?.message || res.statusText}`);
+  }
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "No response from Groq.";
+}
+
+// ─── UI Rendering Helpers ─────────────────────────────────────────────────────
+
 function appendUserMessage(text) {
   removeWelcomeBanner();
-  const msgDiv = document.createElement("div");
-  msgDiv.className = "msg user";
-  msgDiv.innerHTML = `<div class="msg-bubble">${escapeHtml(text)}</div>`;
-  chatMessages.appendChild(msgDiv);
+  const div = document.createElement("div");
+  div.className = "msg user";
+  div.innerHTML = `<div class="msg-bubble">${escapeHtml(text)}</div>`;
+  chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
 function appendAssistantMessage(markdownText, sources = []) {
   removeWelcomeBanner();
-  const msgDiv = document.createElement("div");
-  msgDiv.className = "msg assistant";
+  const div = document.createElement("div");
+  div.className = "msg assistant";
 
-  const formattedHtml = parseMarkdown(markdownText);
-  let fullHtml = `<div class="msg-bubble">${formattedHtml}`;
+  let html = `<div class="msg-bubble">${parseMarkdown(markdownText)}`;
 
-  if (sources && sources.length > 0) {
-    fullHtml += `
+  if (sources?.length > 0) {
+    html += `
       <div class="sources-container">
         <div class="sources-header">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
             <polyline points="14 2 14 8 20 8"></polyline>
           </svg>
-          Sources (${sources.length} retrieved chunks)
+          Sources (${sources.length} chunks)
         </div>
         <div class="source-chips-row">
-    `;
-
-    sources.forEach((src, idx) => {
-      const pageLabel = src.page ? `Page ${src.page}` : `Chunk ${idx + 1}`;
-      fullHtml += `
-        <button type="button" class="source-badge" data-source-index="${idx}">
-          🔖 ${pageLabel}
-        </button>
-      `;
-    });
-
-    fullHtml += `
+          ${sources.map((src, i) => {
+            const label = src.page ? `Page ${src.page}` : `Chunk ${i + 1}`;
+            const score = src.score ? ` · ${src.score}` : "";
+            return `<button type="button" class="source-badge" data-source-index="${i}">🔖 ${label}${score}</button>`;
+          }).join("")}
         </div>
         <div class="source-accordion hidden"></div>
-      </div>
-    `;
+      </div>`;
   }
 
-  fullHtml += `</div>`;
-  msgDiv.innerHTML = fullHtml;
-  chatMessages.appendChild(msgDiv);
+  html += `</div>`;
+  div.innerHTML = html;
+  chatMessages.appendChild(div);
 
-  if (sources && sources.length > 0) {
-    const badges = msgDiv.querySelectorAll(".source-badge");
-    const accordion = msgDiv.querySelector(".source-accordion");
-
-    badges.forEach((badge) => {
+  if (sources?.length > 0) {
+    const accordion = div.querySelector(".source-accordion");
+    div.querySelectorAll(".source-badge").forEach((badge) => {
       badge.addEventListener("click", () => {
-        const idx = parseInt(badge.getAttribute("data-source-index"), 10);
-        const src = sources[idx];
+        const i = parseInt(badge.dataset.sourceIndex, 10);
+        const src = sources[i];
         if (!src) return;
-
-        const snippetText = src.snippet || "No preview snippet available.";
-        const pageLabel = src.page ? `Page ${src.page}` : `Chunk ${idx + 1}`;
-
-        if (!accordion.classList.contains("hidden") && accordion.getAttribute("data-current-idx") === String(idx)) {
+        const label = src.page ? `Page ${src.page}` : `Chunk ${i + 1}`;
+        if (!accordion.classList.contains("hidden") && accordion.dataset.currentIdx === String(i)) {
           accordion.classList.add("hidden");
           return;
         }
-
-        accordion.setAttribute("data-current-idx", String(idx));
-        accordion.innerHTML = `<strong>Source Context (${pageLabel}):</strong>\n"${snippetText}"`;
+        accordion.dataset.currentIdx = String(i);
+        accordion.innerHTML = `<strong>Context (${label}):</strong>\n"${src.snippet}"`;
         accordion.classList.remove("hidden");
       });
     });
@@ -393,8 +658,7 @@ function appendAssistantMessage(markdownText, sources = []) {
 }
 
 function removeWelcomeBanner() {
-  const welcome = chatMessages.querySelector(".welcome-banner");
-  if (welcome) welcome.remove();
+  chatMessages.querySelector(".welcome-banner")?.remove();
 }
 
 function escapeHtml(str) {
@@ -403,27 +667,20 @@ function escapeHtml(str) {
   return p.innerHTML.replace(/\n/g, "<br/>");
 }
 
-/**
- * Lightweight browser-native Markdown parser for Manifest V3 Side Panel
- */
 function parseMarkdown(text) {
   if (!text) return "";
-  return text
-    // Escape basic HTML to prevent XSS
+  // Two-pass list wrapping: convert bullet lines to <li>, then wrap consecutive
+  // runs of <li> elements in a single <ul> (avoids the greedy single-match bug).
+  const html = text
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    // Fenced Code Blocks (```code```)
     .replace(/```([\s\S]*?)```/g, '<pre style="background:rgba(0,0,0,0.35);padding:10px;border-radius:6px;overflow-x:auto;font-size:11px;"><code>$1</code></pre>')
-    // Headers (###)
     .replace(/^### (.*$)/gim, '<h3 style="margin:8px 0 4px;font-size:13px;color:#fff;">$1</h3>')
-    // Bold (**)
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    // Inline Code (`code`)
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
     .replace(/`(.*?)`/g, '<code style="background:rgba(255,255,255,0.12);padding:2px 5px;border-radius:4px;font-family:monospace;font-size:12px;">$1</code>')
-    // Bullet Points (* or -)
     .replace(/^\s*[\*\-]\s+(.*$)/gim, '<li style="margin-left:16px;margin-bottom:4px;">$1</li>')
-    // Wrap lists correctly
-    .replace(/(<li.*<\/li>)/sim, '<ul style="padding-left:4px;margin:6px 0;">$1</ul>')
-    // Paragraphs & Line Breaks
-    .replace(/\n\n/g, '<br><br>')
-    .replace(/\n/g, '<br>');
+    .replace(/\n\n/g, "<br><br>")
+    .replace(/\n/g, "<br>");
+  // Wrap each consecutive run of <li> elements in a <ul>
+  return html.replace(/(<li[^>]*>.*?<\/li>)(<br>(<li[^>]*>.*?<\/li>))*/g,
+    (match) => `<ul style="padding-left:4px;margin:6px 0;">${match.replace(/<br>/g, "")}</ul>`);
 }

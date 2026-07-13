@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "PDF RAG Copilot — AI Side Panel",
-  "version": "1.0.1",
-  "description": "Extracts text from PDF tabs locally (including file:///, web routing parameters, and Drive previews) and chats via a local RAG backend.",
+  "version": "2.0.0",
+  "description": "Fully self-contained PDF AI. Extracts text & OCRs scanned PDFs locally, indexes them in-browser, and chats via your own LLM API key. No backend required.",
   "permissions": [
     "sidePanel",
     "activeTab",
@@ -12,8 +12,10 @@
     "storage"
   ],
   "host_permissions": [
-    "http://localhost:8000/*",
-    "http://127.0.0.1:8000/*",
+    "https://api.openai.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.anthropic.com/*",
+    "https://api.groq.com/*",
     "<all_urls>"
   ],
   "background": {
@@ -31,7 +33,6 @@
       "resources": [
         "lib/pdf.min.js",
         "lib/pdf.worker.min.js",
-        "lib/*",
         "offscreen/offscreen.html",
         "offscreen/offscreen.js"
       ],

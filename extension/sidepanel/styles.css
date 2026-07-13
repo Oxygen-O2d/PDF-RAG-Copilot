@@ -51,6 +51,191 @@ body {
   backdrop-filter: blur(12px);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-icon-only {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.btn-icon-only:hover {
+  background: rgba(255,255,255,0.12);
+  color: var(--text-main);
+}
+
+/* Settings Panel */
+.settings-panel {
+  margin: 10px 16px 0;
+  padding: 14px;
+  background: var(--bg-surface);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: fadeIn 0.2s ease;
+}
+
+.settings-header {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #818cf8;
+  margin-bottom: 2px;
+}
+
+.settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.settings-row label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-row select,
+.settings-row input[type="password"],
+.settings-row input[type="text"] {
+  width: 100%;
+  background: rgba(11, 15, 25, 0.8);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.settings-row select:focus,
+.settings-row input:focus {
+  border-color: var(--border-focus);
+}
+
+.api-key-wrapper {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.api-key-wrapper input {
+  flex: 1;
+}
+
+.settings-save-btn {
+  width: 100%;
+  padding: 9px 14px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* Provider Pill Selector */
+.provider-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.provider-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  transition: all 0.18s ease;
+  letter-spacing: 0.01em;
+}
+
+.provider-pill:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.provider-pill.active {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: rgba(99, 102, 241, 0.5);
+  color: #c7d2fe;
+}
+
+.provider-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* API Key hint link */
+.key-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.key-hint a {
+  color: #818cf8;
+  text-decoration: none;
+}
+
+.key-hint a:hover {
+  text-decoration: underline;
+}
+
+/* Save toast notification */
+.toast {
+  position: fixed;
+  bottom: 70px;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  background: #10b981;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 9999px;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+  z-index: 9999;
+  white-space: nowrap;
+}
+
+.toast.toast-show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+
 .logo-group {
   display: flex;
   align-items: center;
