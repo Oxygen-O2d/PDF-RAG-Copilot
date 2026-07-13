@@ -33,8 +33,6 @@
       "resources": [
         "lib/pdf.min.js",
         "lib/pdf.worker.min.js",
-        "lib/transformers.min.js",
-        "lib/tesseract.esm.min.js",
         "offscreen/offscreen.html",
         "offscreen/offscreen.js"
       ],
