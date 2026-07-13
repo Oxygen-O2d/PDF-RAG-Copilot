@@ -20,7 +20,7 @@ function isPDF(tab) {
   if (url.startsWith("chrome-extension://")) return true;   // built-in PDF viewer
   if (/\.pdf(\?|#|$)/i.test(url)) return true;              // URL ends in .pdf
   if (title.endsWith(".pdf")) return true;                   // title contains PDF filename
-  if (url.includes("drive.google.com")) return true;         // Google Drive
+  if (url.includes("drive.google.com") || url.includes("docs.google.com")) return true; // Google Drive/Docs
   if (tab.isPdf) return true;                               // signalled by content-type check
   return false;
 }
@@ -155,11 +155,20 @@ async function fetchPdfInTab(url) {
   try {
     const res = await fetch(url, { credentials: "include" });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-    const buf = await res.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    return { success: true, base64: btoa(binary) };
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("text/html")) {
+      throw new Error("Fetched URL returned an HTML page instead of a PDF document.");
+    }
+    const blob = await res.blob();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const b64 = reader.result.split(",")[1];
+        resolve({ success: true, base64: b64 });
+      };
+      reader.onerror = () => reject(new Error("Failed to read PDF blob"));
+      reader.readAsDataURL(blob);
+    });
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -204,17 +213,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const { tabId, url } = message.payload;
         const targetUrl = url || "";
-        const isDrivePage = targetUrl.includes("drive.google.com");
+        const isDrivePage = targetUrl.includes("drive.google.com") || targetUrl.includes("docs.google.com");
 
         // ── Helper: fetch PDF binary in background (host_permissions bypasses CORS) ──
         async function fetchPdfAsBase64(fetchUrl) {
           const res = await fetch(fetchUrl, { credentials: "include" });
           if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-          const buf = await res.arrayBuffer();
-          const bytes = new Uint8Array(buf);
-          let binary = "";
-          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-          return btoa(binary);
+          const contentType = res.headers.get("content-type") || "";
+          if (contentType.includes("text/html")) {
+            throw new Error("Fetched URL returned an HTML page instead of a PDF document.");
+          }
+          const blob = await res.blob();
+          return await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result.split(",")[1]);
+            reader.onerror = () => reject(new Error("Failed to read PDF blob"));
+            reader.readAsDataURL(blob);
+          });
         }
 
         // 1. WhatsApp Web / Blob URLs
