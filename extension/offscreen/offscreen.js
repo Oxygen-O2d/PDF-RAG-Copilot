@@ -19,14 +19,13 @@ if (typeof pdfjsLib !== "undefined") {
 }
 
 // ─── Transformers.js setup ────────────────────────────────────────────────────
-// Loaded dynamically from CDN on first use; cached in-memory after that.
+// Loaded from bundled local file to avoid MV3 CSP restrictions on CDN imports.
 let embedder = null;
 
 async function getEmbedder() {
   if (embedder) return embedder;
-  const { pipeline } = await import(
-    "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js"
-  );
+  const localUrl = chrome.runtime.getURL("lib/transformers.min.js");
+  const { pipeline } = await import(localUrl);
   embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
     quantized: true
   });
@@ -161,12 +160,11 @@ let tesseractWorker = null;
 
 async function getTesseractWorker() {
   if (tesseractWorker) return tesseractWorker;
-
-  // Dynamically import Tesseract.js from CDN
-  const { createWorker } = await import(
-    "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js"
-  );
+  // Load from bundled local file — avoids MV3 CSP restriction on CDN imports.
+  const localUrl = chrome.runtime.getURL("lib/tesseract.esm.min.js");
+  const { createWorker } = await import(localUrl);
   tesseractWorker = await createWorker("eng", 1, {
+    // Worker and WASM core are still fetched from CDN (fetch is allowed by host_permissions)
     workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
     corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd.wasm.js",
     logger: (m) => console.debug("[Tesseract]", m.status, m.progress?.toFixed(2))
@@ -197,21 +195,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "OFFSCREEN_EXTRACT_PDF") {
     (async () => {
       try {
-        const { url } = message.payload;
+        const { arrayBuffer: b64, url } = message.payload;
 
-        // Fetch the PDF binary
+        // Decode base64 ArrayBuffer sent from background service worker
+        // (background fetches the PDF so it benefits from host_permissions CORS bypass)
         let arrayBuffer;
-        try {
+        if (b64) {
+          const binary = atob(b64);
+          arrayBuffer = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) arrayBuffer[i] = binary.charCodeAt(i);
+          arrayBuffer = arrayBuffer.buffer;
+        } else {
+          // Fallback: fetch directly (works for same-origin or CORS-open resources)
           const res = await fetch(url, { credentials: "include" });
           if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
           arrayBuffer = await res.arrayBuffer();
-        } catch (fetchErr) {
-          if (url?.startsWith("file://")) {
-            throw new Error(
-              'Cannot read local file. Please enable "Allow access to file URLs" in extension settings (chrome://extensions).'
-            );
-          }
-          throw new Error(`Failed to fetch PDF: ${fetchErr.message}`);
         }
 
         // Try pdf.js first

@@ -82,14 +82,10 @@
         </span>
       </div>
 
-      <!-- Model selector — options swap per provider -->
-      <div class="settings-row">
-        <label for="modelSelect">Model</label>
-        <select id="modelSelect">
-          <option value="gemini-1.5-flash">gemini-1.5-flash ⚡ Fast</option>
-          <option value="gemini-2.0-flash">gemini-2.0-flash ✨ Latest</option>
-          <option value="gemini-1.5-pro">gemini-1.5-pro 🧠 Smart</option>
-        </select>
+      <!-- Fixed model badge (no user selection needed) -->
+      <div class="model-info-row">
+        <span class="model-info-label">Model</span>
+        <span class="model-info-badge" id="modelInfo">gemini-2.0-flash</span>
       </div>
 
       <button id="saveSettingsBtn" class="btn btn-primary settings-save-btn">

@@ -15,11 +15,27 @@ chrome.runtime.onInstalled.addListener(() => {
 
 function isPDF(tab) {
   if (!tab || !tab.url) return false;
-  const urlRegex = /\.pdf($|\?|#)/i;
-  const isPdfUrl = urlRegex.test(tab.url) || tab.url.startsWith("chrome-extension://");
-  const isPdfTitle = tab.title && tab.title.toLowerCase().includes(".pdf");
-  const isDrivePage = tab.url.includes("drive.google.com");
-  return Boolean(isPdfUrl || isPdfTitle || isDrivePage);
+  const url = tab.url;
+  const title = (tab.title || "").toLowerCase();
+  if (url.startsWith("chrome-extension://")) return true;   // built-in PDF viewer
+  if (/\.pdf(\?|#|$)/i.test(url)) return true;              // URL ends in .pdf
+  if (title.endsWith(".pdf")) return true;                   // title contains PDF filename
+  if (url.includes("drive.google.com")) return true;         // Google Drive
+  if (tab.isPdf) return true;                               // signalled by content-type check
+  return false;
+}
+
+// Tries to detect application/pdf content type via scripting (catches PDF URLs without .pdf)
+async function detectPdfByContentType(tabId) {
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => document.contentType
+    });
+    return result?.result === "application/pdf";
+  } catch {
+    return false;
+  }
 }
 
 // ─── Offscreen Document Lifecycle ─────────────────────────────────────────────
@@ -46,13 +62,19 @@ async function inspectActiveTab(tabId) {
       chrome.extension.isAllowedFileSchemeAccess(resolve);
     });
 
+    // Check content-type for web PDFs that don't have .pdf in the URL
+    let isPdfByType = false;
+    if (!isPDF(tab) && tab.url && !tab.url.startsWith("chrome") && !tab.url.startsWith("file")) {
+      isPdfByType = await detectPdfByContentType(tabId);
+    }
+
     chrome.runtime.sendMessage({
       type: "TAB_UPDATED",
       payload: {
         tabId: tab.id,
         url: tab.url,
         title: tab.title || "Untitled Document",
-        isPdf: isPDF(tab),
+        isPdf: isPDF(tab) || isPdfByType,
         isFileUrl: tab.url.startsWith("file://"),
         allowedFileAccess
       }
@@ -140,13 +162,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const allowedFileAccess = await new Promise((resolve) => {
         chrome.extension.isAllowedFileSchemeAccess(resolve);
       });
+      let isPdfByType = false;
+      if (!isPDF(tab) && tab.url && !tab.url.startsWith("chrome") && !tab.url.startsWith("file")) {
+        isPdfByType = await detectPdfByContentType(tab.id);
+      }
       sendResponse({
         success: true,
         payload: {
           tabId: tab.id,
           url: tab.url,
           title: tab.title || "Untitled Document",
-          isPdf: isPDF(tab),
+          isPdf: isPDF(tab) || isPdfByType,
           isFileUrl: tab.url.startsWith("file://"),
           allowedFileAccess
         }
@@ -155,19 +181,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // Main extraction pipeline — triggered by side panel "Extract & Index" button
   if (message.type === "EXTRACT_PDF_TEXT") {
     (async () => {
       try {
-        const targetUrl = message.payload?.url || "";
+        const { tabId, url } = message.payload;
+        const targetUrl = url || "";
         const isDrivePage = targetUrl.includes("drive.google.com");
 
+        // ── Helper: fetch PDF binary in background (host_permissions bypasses CORS) ──
+        async function fetchPdfAsBase64(fetchUrl) {
+          const res = await fetch(fetchUrl, { credentials: "include" });
+          if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+          const buf = await res.arrayBuffer();
+          // Convert to base64 so it survives chrome.runtime message serialization
+          const bytes = new Uint8Array(buf);
+          let binary = "";
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          return btoa(binary);
+        }
+
         if (isDrivePage) {
-          // Try to get Drive File ID for binary download
+          // Try Drive File ID → direct download
           let foundFileId = null;
           try {
             const idResults = await chrome.scripting.executeScript({
-              target: { tabId: message.payload.tabId, allFrames: true },
+              target: { tabId, allFrames: true },
               func: findDriveFileId
             });
             for (const r of (idResults || [])) {
@@ -182,20 +220,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           if (foundFileId) {
             const driveDownloadUrl = `https://drive.google.com/uc?export=download&id=${foundFileId}`;
-            await ensureOffscreenDocument();
-            const result = await chrome.runtime.sendMessage({
-              type: "OFFSCREEN_EXTRACT_PDF",
-              payload: { url: driveDownloadUrl, tabId: message.payload.tabId }
-            });
-            if (result && result.success && result.pageCount > 0) {
-              sendResponse(result);
-              return;
+            try {
+              await ensureOffscreenDocument();
+              const b64 = await fetchPdfAsBase64(driveDownloadUrl);
+              const result = await chrome.runtime.sendMessage({
+                type: "OFFSCREEN_EXTRACT_PDF",
+                payload: { arrayBuffer: b64, url: driveDownloadUrl }
+              });
+              if (result?.success && result.pageCount > 0) { sendResponse(result); return; }
+            } catch (e) {
+              console.debug("[Background] Drive binary fetch failed, falling back to DOM scrape:", e);
             }
           }
 
           // Fallback: DOM scrape
           const results = await chrome.scripting.executeScript({
-            target: { tabId: message.payload.tabId, allFrames: true },
+            target: { tabId, allFrames: true },
             func: scrapeDriveDomText
           });
           let best = null;
@@ -209,13 +249,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        // Standard web / local PDF
+        // Standard web / local PDF — fetch binary in background, pass to offscreen
         await ensureOffscreenDocument();
-        const result = await chrome.runtime.sendMessage({
-          type: "OFFSCREEN_EXTRACT_PDF",
-          payload: message.payload
-        });
-        sendResponse(result);
+
+        if (targetUrl.startsWith("file://")) {
+          // Local file: offscreen must fetch directly (needs "Allow access to file URLs")
+          const result = await chrome.runtime.sendMessage({
+            type: "OFFSCREEN_EXTRACT_PDF",
+            payload: { url: targetUrl }
+          });
+          sendResponse(result);
+        } else {
+          // Web PDF: fetch here in background (CORS bypass via host_permissions) → base64 to offscreen
+          const b64 = await fetchPdfAsBase64(targetUrl);
+          const result = await chrome.runtime.sendMessage({
+            type: "OFFSCREEN_EXTRACT_PDF",
+            payload: { arrayBuffer: b64, url: targetUrl }
+          });
+          sendResponse(result);
+        }
       } catch (error) {
         console.error("[Background] Extraction failed:", error);
         sendResponse({ success: false, error: error.message || "Failed to extract PDF." });

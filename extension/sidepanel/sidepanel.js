@@ -9,62 +9,39 @@
 const PROVIDERS = {
   gemini: {
     label: "Google",
+    model: "gemini-2.0-flash",
     keyLabel: "Google API Key",
     keyHint: "Get free key →",
     keyLink: "https://aistudio.google.com/app/apikey",
     keyLinkText: "aistudio.google.com",
-    placeholder: "AIza...",
-    models: [
-      { value: "gemini-2.0-flash",   label: "gemini-2.0-flash ✨ Latest" },
-      { value: "gemini-1.5-flash",   label: "gemini-1.5-flash ⚡ Fast" },
-      { value: "gemini-1.5-pro",     label: "gemini-1.5-pro 🧠 Smart" },
-    ],
-    default: "gemini-2.0-flash"
+    placeholder: "AIza..."
   },
   openai: {
     label: "OpenAI",
+    model: "gpt-4o-mini",
     keyLabel: "OpenAI API Key",
     keyHint: "Get key →",
     keyLink: "https://platform.openai.com/api-keys",
     keyLinkText: "platform.openai.com",
-    placeholder: "sk-...",
-    models: [
-      { value: "gpt-4o-mini",     label: "gpt-4o-mini ⚡ Fast & Cheap" },
-      { value: "gpt-4o",          label: "gpt-4o 🧠 Most Capable" },
-      { value: "gpt-3.5-turbo",   label: "gpt-3.5-turbo 💰 Budget" },
-    ],
-    default: "gpt-4o-mini"
+    placeholder: "sk-..."
   },
   anthropic: {
     label: "Anthropic",
+    model: "claude-3-5-haiku-20241022",
     keyLabel: "Anthropic API Key",
     keyHint: "Get key →",
     keyLink: "https://console.anthropic.com/settings/keys",
     keyLinkText: "console.anthropic.com",
-    placeholder: "sk-ant-...",
-    models: [
-      { value: "claude-3-5-haiku-20241022",  label: "claude-3.5-haiku ⚡ Fast" },
-      { value: "claude-3-5-sonnet-20241022", label: "claude-3.5-sonnet 🧠 Smart" },
-      { value: "claude-3-opus-20240229",     label: "claude-3-opus 💎 Best" },
-    ],
-    default: "claude-3-5-haiku-20241022"
+    placeholder: "sk-ant-..."
   },
   groq: {
     label: "Groq",
+    model: "llama-3.3-70b-versatile",
     keyLabel: "Groq API Key",
     keyHint: "Get free key →",
     keyLink: "https://console.groq.com/keys",
     keyLinkText: "console.groq.com",
-    placeholder: "gsk_...",
-    models: [
-      // Best for RAG: strong reasoning + Groq's ultra-fast LPU inference
-      { value: "llama-3.3-70b-versatile",     label: "llama-3.3-70b-versatile 🏆 Best for RAG" },
-      { value: "llama-3.1-8b-instant",        label: "llama-3.1-8b-instant ⚡ Fastest" },
-      { value: "llama3-70b-8192",             label: "llama3-70b-8192 🧠 Capable" },
-      { value: "mixtral-8x7b-32768",          label: "mixtral-8x7b-32768 📚 Long Context" },
-      { value: "gemma2-9b-it",               label: "gemma2-9b-it 🌿 Google" },
-    ],
-    default: "llama-3.3-70b-versatile"
+    placeholder: "gsk_..."
   }
 };
 
@@ -96,7 +73,6 @@ const apiKeyInput          = document.getElementById("apiKeyInput");
 const apiKeyLabel          = document.getElementById("apiKeyLabel");
 const apiKeyHint           = document.getElementById("apiKeyHint");
 const apiKeyLink           = document.getElementById("apiKeyLink");
-const modelSelect          = document.getElementById("modelSelect");
 const saveSettingsBtn      = document.getElementById("saveSettingsBtn");
 const toggleKeyVisibility  = document.getElementById("toggleKeyVisibility");
 
@@ -108,10 +84,10 @@ let currentDocId   = null;
 // Per-provider settings (each has its own key + model stored separately)
 let settings = {
   activeProvider: "gemini",
-  gemini:    { apiKey: "", model: "gemini-2.0-flash" },
-  openai:    { apiKey: "", model: "gpt-4o-mini" },
-  anthropic: { apiKey: "", model: "claude-3-5-haiku-20241022" },
-  groq:      { apiKey: "", model: "llama-3.3-70b-versatile" }
+  gemini:    { apiKey: "" },
+  openai:    { apiKey: "" },
+  anthropic: { apiKey: "" },
+  groq:      { apiKey: "" }
 };
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -136,11 +112,7 @@ async function loadSettings() {
 
 async function saveSettings() {
   const provider = settings.activeProvider;
-
-  // Save the current key + model into the active provider's slot
   settings[provider].apiKey = apiKeyInput.value.trim();
-  settings[provider].model  = modelSelect.value;
-
   await chrome.storage.sync.set({
     activeProvider: settings.activeProvider,
     gemini:    settings.gemini,
@@ -148,7 +120,6 @@ async function saveSettings() {
     anthropic: settings.anthropic,
     groq:      settings.groq
   });
-
   updateApiStatusBadge();
   settingsPanel.classList.add("hidden");
   showSaveToast();
@@ -171,41 +142,33 @@ function showSaveToast() {
 function applyProviderToUI(providerKey) {
   const cfg = PROVIDERS[providerKey];
   if (!cfg) return;
-
   settings.activeProvider = providerKey;
   providerSelect.value = providerKey;
 
-  // Update pill active state
   providerPills.querySelectorAll(".provider-pill").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.provider === providerKey);
   });
 
-  // Update label, hint, placeholder
   apiKeyLabel.textContent  = cfg.keyLabel;
   apiKeyInput.placeholder  = cfg.placeholder;
   apiKeyLink.href          = cfg.keyLink;
   apiKeyLink.textContent   = cfg.keyLinkText;
   apiKeyHint.childNodes[0].textContent = cfg.keyHint + " ";
-
-  // Fill API key from saved settings
   apiKeyInput.value        = settings[providerKey].apiKey || "";
   apiKeyInput.type         = "password";
 
-  // Rebuild model options
-  modelSelect.innerHTML = cfg.models
-    .map((m) => `<option value="${m.value}">${m.label}</option>`)
-    .join("");
-  modelSelect.value = settings[providerKey].model || cfg.default;
+  // Show the fixed model name below the key field (no dropdown needed)
+  const modelInfo = document.getElementById("modelInfo");
+  if (modelInfo) modelInfo.textContent = `Model: ${cfg.model}`;
 }
 
 function updateApiStatusBadge() {
   const provider = settings.activeProvider;
   const apiKey   = settings[provider]?.apiKey;
-
+  const model    = PROVIDERS[provider]?.model || "";
   if (apiKey) {
-    const label = PROVIDERS[provider]?.label || provider;
     apiStatusBadge.className = "status-badge online";
-    apiStatusText.textContent = `${label} Ready`;
+    apiStatusText.textContent = `${PROVIDERS[provider]?.label} · ${model}`;
   } else {
     apiStatusBadge.className = "status-badge offline";
     apiStatusText.textContent = "No API Key";
@@ -473,9 +436,8 @@ function bgMessage(type, payload) {
 async function callLLM(query, context) {
   const provider = settings.activeProvider;
   const apiKey   = settings[provider].apiKey;
-  const model    = settings[provider].model;
+  const model    = PROVIDERS[provider].model;   // fixed per provider
   const prompt   = buildRagPrompt(query, context);
-
   switch (provider) {
     case "openai":    return callOpenAI(prompt, apiKey, model);
     case "anthropic": return callAnthropic(prompt, apiKey, model);
