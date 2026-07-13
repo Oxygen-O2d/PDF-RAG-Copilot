@@ -147,6 +147,24 @@ function scrapeDriveDomText() {
   }
 }
 
+// ─── Helper: In-Tab PDF Fetcher ───────────────────────────────────────────────
+// Injected into the current tab so it can access blob: URLs (like WhatsApp)
+// and share the tab's authenticated cookies (like Google Drive).
+
+async function fetchPdfInTab(url) {
+  try {
+    const res = await fetch(url, { credentials: "include" });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    const buf = await res.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return { success: true, base64: btoa(binary) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
 // ─── Message Router ───────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -193,13 +211,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const res = await fetch(fetchUrl, { credentials: "include" });
           if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
           const buf = await res.arrayBuffer();
-          // Convert to base64 so it survives chrome.runtime message serialization
           const bytes = new Uint8Array(buf);
           let binary = "";
           for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
           return btoa(binary);
         }
 
+        // 1. WhatsApp Web / Blob URLs
+        if (targetUrl.startsWith("blob:")) {
+          try {
+            // Blob URLs must be fetched from within the tab that created them
+            const fetchResults = await chrome.scripting.executeScript({
+              target: { tabId },
+              func: fetchPdfInTab,
+              args: [targetUrl]
+            });
+            const fetchRes = fetchResults[0]?.result;
+            if (fetchRes && fetchRes.success && fetchRes.base64) {
+              await ensureOffscreenDocument();
+              const result = await chrome.runtime.sendMessage({
+                type: "OFFSCREEN_EXTRACT_PDF",
+                payload: { arrayBuffer: fetchRes.base64, url: targetUrl }
+              });
+              sendResponse(result);
+              return;
+            } else {
+              throw new Error(fetchRes?.error || "In-tab fetch failed");
+            }
+          } catch (e) {
+            console.error("[Background] Blob fetch failed:", e);
+            sendResponse({ success: false, error: "Could not read blob PDF. Refresh the page and try again." });
+            return;
+          }
+        }
+
+        // 2. Google Drive
         if (isDrivePage) {
           // Try Drive File ID → direct download
           let foundFileId = null;
@@ -221,13 +267,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (foundFileId) {
             const driveDownloadUrl = `https://drive.google.com/uc?export=download&id=${foundFileId}`;
             try {
-              await ensureOffscreenDocument();
-              const b64 = await fetchPdfAsBase64(driveDownloadUrl);
-              const result = await chrome.runtime.sendMessage({
-                type: "OFFSCREEN_EXTRACT_PDF",
-                payload: { arrayBuffer: b64, url: driveDownloadUrl }
+              // First try fetching inside the tab to inherit user session cookies automatically
+              const fetchResults = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: fetchPdfInTab,
+                args: [driveDownloadUrl]
               });
-              if (result?.success && result.pageCount > 0) { sendResponse(result); return; }
+              let b64 = fetchResults[0]?.result?.success ? fetchResults[0].result.base64 : null;
+
+              // Fallback to background fetch if in-tab failed
+              if (!b64) {
+                b64 = await fetchPdfAsBase64(driveDownloadUrl);
+              }
+
+              if (b64) {
+                // If it's HTML (Google virus scan warning), PDF.js will fail gracefully, and we fallback to DOM scrape
+                await ensureOffscreenDocument();
+                const result = await chrome.runtime.sendMessage({
+                  type: "OFFSCREEN_EXTRACT_PDF",
+                  payload: { arrayBuffer: b64, url: driveDownloadUrl }
+                });
+                if (result?.success && result.pageCount > 0) { sendResponse(result); return; }
+              }
             } catch (e) {
               console.debug("[Background] Drive binary fetch failed, falling back to DOM scrape:", e);
             }
@@ -249,7 +310,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        // Standard web / local PDF — fetch binary in background, pass to offscreen
+        // 3. Standard web / local PDF
         await ensureOffscreenDocument();
 
         if (targetUrl.startsWith("file://")) {
