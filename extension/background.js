@@ -110,15 +110,16 @@ function findDriveFileId() {
   return null;
 }
 
-function scrapeDriveDomText() {
+function scrapeGenericDomText() {
   try {
     const pages = [];
     const textChunks = [];
-    const pageElements = document.querySelectorAll(
+    // 1. Try Drive/Docs specific formatting
+    const drivePages = document.querySelectorAll(
       '.textLayer, [role="document"] .kix-page, .ndfHFb-c4YZDc-cYj04b-V67aGc, .kix-page-content-wrapper, .drive-viewer-paginated-scrollable .page'
     );
-    if (pageElements && pageElements.length > 0) {
-      pageElements.forEach((el) => {
+    if (drivePages && drivePages.length > 0) {
+      drivePages.forEach((el) => {
         const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
         if (text && text.length > 15 && !text.includes("docs-offline-")) {
           const pageNum = pages.length + 1;
@@ -126,24 +127,29 @@ function scrapeDriveDomText() {
           textChunks.push(`[Page ${pageNum}]\n${text}`);
         }
       });
-    }
-    let fullText = textChunks.join("\n\n");
-    if (!fullText || fullText.trim().length < 30) {
-      const modal = document.querySelector('[role="dialog"]') || document.querySelector(".drive-viewer-paginated-scrollable");
-      if (modal) {
-        fullText = (modal.innerText || modal.textContent || "").replace(/\s+/g, " ").trim();
-        if (fullText && !fullText.includes("docs-offline-")) {
-          pages.length = 0;
-          pages.push({ page: 1, text: fullText });
-        }
+      if (pages.length > 0) {
+        return { success: true, pageCount: pages.length, pages, fullText: textChunks.join("\n\n"), url: window.location.href };
       }
     }
-    if (!fullText || fullText.trim().length < 10) {
-      return { success: false, error: "Could not extract visible text from Google Drive preview." };
+
+    // 2. Drive modal fallback
+    const modal = document.querySelector('[role="dialog"]') || document.querySelector(".drive-viewer-paginated-scrollable");
+    if (modal) {
+      const fullText = (modal.innerText || modal.textContent || "").replace(/\s+/g, " ").trim();
+      if (fullText && fullText.length > 30 && !fullText.includes("docs-offline-")) {
+        return { success: true, pageCount: 1, pages: [{ page: 1, text: fullText }], fullText, url: window.location.href };
+      }
     }
-    return { success: true, pageCount: pages.length || 1, pages, fullText, url: window.location.href };
+
+    // 3. Universal generic fallback: grab all body text (useful for WhatsApp, OneDrive, Notion embeds, etc.)
+    const bodyText = document.body.innerText.replace(/\s+/g, " ").trim();
+    if (bodyText.length > 100) {
+      return { success: true, pageCount: 1, pages: [{ page: 1, text: bodyText }], fullText: bodyText, url: window.location.href };
+    }
+
+    return { success: false, error: "Could not extract visible text from the page." };
   } catch (err) {
-    return { success: false, error: "Drive extraction error: " + err.message };
+    return { success: false, error: "DOM extraction error: " + err.message };
   }
 }
 
@@ -233,86 +239,71 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         // 1. WhatsApp Web / Blob URLs
-        if (targetUrl.startsWith("blob:")) {
-          try {
-            // Blob URLs must be fetched from within the tab that created them
+        let b64 = null;
+        let fetchError = null;
+
+        try {
+          if (targetUrl.startsWith("blob:")) {
             const fetchResults = await chrome.scripting.executeScript({
               target: { tabId },
               func: fetchPdfInTab,
               args: [targetUrl]
             });
             const fetchRes = fetchResults[0]?.result;
-            if (fetchRes && fetchRes.success && fetchRes.base64) {
-              await ensureOffscreenDocument();
-              const result = await chrome.runtime.sendMessage({
-                type: "OFFSCREEN_EXTRACT_PDF",
-                payload: { arrayBuffer: fetchRes.base64, url: targetUrl }
-              });
+            if (fetchRes?.success && fetchRes.base64) b64 = fetchRes.base64;
+            else throw new Error(fetchRes?.error || "In-tab fetch failed");
+          } 
+          // 2. Google Drive / Docs
+          else if (isDrivePage) {
+            let foundFileId = null;
+            try {
+              const idResults = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: findDriveFileId });
+              for (const r of (idResults || [])) {
+                if (r.result && typeof r.result === "string" && r.result.length >= 20) { foundFileId = r.result; break; }
+              }
+            } catch (e) {}
+
+            if (foundFileId) {
+              const driveDownloadUrl = `https://drive.google.com/uc?export=download&id=${foundFileId}`;
+              const fetchResults = await chrome.scripting.executeScript({ target: { tabId }, func: fetchPdfInTab, args: [driveDownloadUrl] });
+              if (fetchResults[0]?.result?.success) b64 = fetchResults[0].result.base64;
+              else b64 = await fetchPdfAsBase64(driveDownloadUrl);
+            }
+          } 
+          // 3. Standard web / local PDF
+          else if (!targetUrl.startsWith("file://")) {
+            b64 = await fetchPdfAsBase64(targetUrl);
+          }
+        } catch (e) {
+          fetchError = e;
+          console.debug("[Background] Binary fetch failed:", e);
+        }
+
+        // Try extracting via offscreen pdf.js if we got the binary (or if it's a local file offscreen can fetch itself)
+        if (b64 || targetUrl.startsWith("file://")) {
+          try {
+            await ensureOffscreenDocument();
+            const result = await chrome.runtime.sendMessage({
+              type: "OFFSCREEN_EXTRACT_PDF",
+              payload: { arrayBuffer: b64, url: targetUrl }
+            });
+            if (result?.success && result.pageCount > 0) {
               sendResponse(result);
               return;
-            } else {
-              throw new Error(fetchRes?.error || "In-tab fetch failed");
             }
           } catch (e) {
-            console.error("[Background] Blob fetch failed:", e);
-            sendResponse({ success: false, error: "Could not read blob PDF. Refresh the page and try again." });
-            return;
+            console.debug("[Background] Offscreen extraction failed:", e);
+            fetchError = fetchError || e;
           }
         }
 
-        // 2. Google Drive
-        if (isDrivePage) {
-          // Try Drive File ID → direct download
-          let foundFileId = null;
-          try {
-            const idResults = await chrome.scripting.executeScript({
-              target: { tabId, allFrames: true },
-              func: findDriveFileId
-            });
-            for (const r of (idResults || [])) {
-              if (r.result && typeof r.result === "string" && r.result.length >= 20) {
-                foundFileId = r.result;
-                break;
-              }
-            }
-          } catch (e) {
-            console.debug("[Background] Drive File ID lookup failed:", e);
-          }
-
-          if (foundFileId) {
-            const driveDownloadUrl = `https://drive.google.com/uc?export=download&id=${foundFileId}`;
-            try {
-              // First try fetching inside the tab to inherit user session cookies automatically
-              const fetchResults = await chrome.scripting.executeScript({
-                target: { tabId },
-                func: fetchPdfInTab,
-                args: [driveDownloadUrl]
-              });
-              let b64 = fetchResults[0]?.result?.success ? fetchResults[0].result.base64 : null;
-
-              // Fallback to background fetch if in-tab failed
-              if (!b64) {
-                b64 = await fetchPdfAsBase64(driveDownloadUrl);
-              }
-
-              if (b64) {
-                // If it's HTML (Google virus scan warning), PDF.js will fail gracefully, and we fallback to DOM scrape
-                await ensureOffscreenDocument();
-                const result = await chrome.runtime.sendMessage({
-                  type: "OFFSCREEN_EXTRACT_PDF",
-                  payload: { arrayBuffer: b64, url: driveDownloadUrl }
-                });
-                if (result?.success && result.pageCount > 0) { sendResponse(result); return; }
-              }
-            } catch (e) {
-              console.debug("[Background] Drive binary fetch failed, falling back to DOM scrape:", e);
-            }
-          }
-
-          // Fallback: DOM scrape
+        // --- UNIVERSAL FALLBACK: DOM Scrape ---
+        // If fetch failed, returned HTML, or pdf.js failed, and the tab isn't a restricted local/extension page:
+        if (!targetUrl.startsWith("file://") && !targetUrl.startsWith("chrome")) {
+          console.log("[Background] Falling back to generic DOM scrape...");
           const results = await chrome.scripting.executeScript({
             target: { tabId, allFrames: true },
-            func: scrapeDriveDomText
+            func: scrapeGenericDomText
           });
           let best = null;
           for (const r of (results || [])) {
@@ -320,30 +311,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               if (!best || r.result.fullText.length > best.fullText.length) best = r.result;
             }
           }
-          if (!best) throw new Error("Could not extract text from Google Drive. Ensure the PDF preview is open.");
-          sendResponse(best);
-          return;
+          if (best) {
+            sendResponse(best);
+            return;
+          }
         }
 
-        // 3. Standard web / local PDF
-        await ensureOffscreenDocument();
+        throw fetchError || new Error("Could not extract PDF text or find visible text on the page.");
 
-        if (targetUrl.startsWith("file://")) {
-          // Local file: offscreen must fetch directly (needs "Allow access to file URLs")
-          const result = await chrome.runtime.sendMessage({
-            type: "OFFSCREEN_EXTRACT_PDF",
-            payload: { url: targetUrl }
-          });
-          sendResponse(result);
-        } else {
-          // Web PDF: fetch here in background (CORS bypass via host_permissions) → base64 to offscreen
-          const b64 = await fetchPdfAsBase64(targetUrl);
-          const result = await chrome.runtime.sendMessage({
-            type: "OFFSCREEN_EXTRACT_PDF",
-            payload: { arrayBuffer: b64, url: targetUrl }
-          });
-          sendResponse(result);
-        }
       } catch (error) {
         console.error("[Background] Extraction failed:", error);
         sendResponse({ success: false, error: error.message || "Failed to extract PDF." });
